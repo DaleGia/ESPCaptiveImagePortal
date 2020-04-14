@@ -25,13 +25,15 @@
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
 #include "FS.h"
-#include <ESPStringTemplate.h>
+#include "ESPStringTemplate.h"
+#include "ESPFlashCounter.h"
+
 
 #define DEFAULT_SSID                  "ESPCaptiveImagePortal"
 #define HTTP_USER_AUTH                "supersecretadmin"
 #define HTTP_PASS_AUTH                "yomamarama"
 #define SSID_FILEPATH                 "/ssid.txt"
-#define VISIT_COUNTER_FILEPATH        "/visitcounter.txt"
+#define CONNECTION_COUNTER_FILEPATH   "/connectionCounter"
 
 #define IMAGES_DIRECTORY              "/images"
 #define WEB_PAGE_FILEPATH             "/stringtemplate/webpage.html"
@@ -57,15 +59,15 @@ void handleCaptiveImagePortal(AsyncWebServerRequest *request);
 void handleUploadPage(AsyncWebServerRequest *request);
 
 String getSSIDString(void);
-String getVisitCounter(void);
 void updateSSIDString(const String& content);
-void updateVisitCounter(const String& counter);
-void incrementVisitCounter();
 
 /* Create DNS server instance to enable captive portal. */
 DNSServer dnsServer;
 /* Create webserver instance for serving the StringTemplate example. */
 AsyncWebServer server(80);
+/* Set up counter for number of connected devices */
+ESPFlashCounter wifiConnectionCounter(CONNECTION_COUNTER_FILEPATH);
+
 /* Soft AP network parameters */
 IPAddress apIP(192, 168, 4, 1);
 IPAddress netMsk(255, 255, 255, 0);
@@ -75,9 +77,11 @@ bool fileUploadInProgress = false;
 
 void setup()
 {
+  Serial.begin(115200);
   SPIFFS.begin();
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, true);
+  
   /* Open the SPIFFS root directory and serve each file with a uri of the filename */
   imagesDirectory = SPIFFS.openDir(IMAGES_DIRECTORY);
   while (imagesDirectory.next())
@@ -91,11 +95,6 @@ void setup()
   if(!SPIFFS.exists(SSID_FILEPATH))
   {
     updateSSIDString(DEFAULT_SSID);
-  } 
-
-  if(!SPIFFS.exists(VISIT_COUNTER_FILEPATH))
-  {
-    updateVisitCounter(String(0));
   } 
   
   /* Configure access point with static IP address */
@@ -136,7 +135,7 @@ void loop()
     else
     {
       digitalWrite(LED_BUILTIN, false);
-      incrementVisitCounter();
+      wifiConnectionCounter.increment();
     }
 
     previousNumberOfStations = numberOfStations;
@@ -172,7 +171,7 @@ void handleCaptiveImagePortal(AsyncWebServerRequest *request)
     pageTemplate.add_P(PSTR("<h1>NO IMAGES UPLOADED!!!</h1>"));
   }
   pageTemplate.add_P(_PAGEFOOTER);
-  request->send(SPIFFS, pageTemplate.getFilename(), "text/html");
+  request->send(SPIFFS, pageTemplate.getFileName(), "text/html");
 }
 
 void handleUploadPage(AsyncWebServerRequest *request)
@@ -187,7 +186,7 @@ void handleUploadPage(AsyncWebServerRequest *request)
   pageTemplate.add_P(_PAGEHEADER);
   pageTemplate.add_P(_TITLE, "%TITLE%", "Super Secret Page");
   pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Visit Count");
-  pageTemplate.add(getVisitCounter().c_str());
+  pageTemplate.add(String(wifiConnectionCounter.get()).c_str());
   pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Delete Files");
 
   imagesDirectory.rewind();
@@ -201,7 +200,7 @@ void handleUploadPage(AsyncWebServerRequest *request)
   pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Change SSID");
   pageTemplate.add_P(_SSIDEDIT);
   pageTemplate.add_P(_PAGEFOOTER);
-  request->send(SPIFFS, pageTemplate.getFilename(), "text/html");
+  request->send(SPIFFS, pageTemplate.getFileName(), "text/html");
 }
 
 void handleDelete(AsyncWebServerRequest *request)
@@ -293,36 +292,9 @@ String getSSIDString(void)
   return ssid_string;
 }
 
-String getVisitCounter(void)
-{
-  String value;
-  File counter = SPIFFS.open(VISIT_COUNTER_FILEPATH, "r");
-  while(counter.available())
-  {
-    value += (char)counter.read();
-  }
-  counter.close();  
-  return value;
-}
-
 void updateSSIDString(const String& content)
 {
   File ssid = SPIFFS.open(SSID_FILEPATH, "w");
   ssid.print(content);      
   ssid.close();  
-}
-
-void updateVisitCounter(const String& counter)
-{
-  File visitCounter = SPIFFS.open(VISIT_COUNTER_FILEPATH, "w");
-  visitCounter.print(counter);      
-  visitCounter.close();
-}
-
-void incrementVisitCounter()
-{  
-  String counter = getVisitCounter();
-  int int_count = counter.toInt();
-  int_count++;
-  updateVisitCounter(String(int_count));
 }
