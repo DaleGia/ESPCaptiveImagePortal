@@ -5,7 +5,6 @@
   This file is a an application for a captive image portal with upload page.
   WRITE MORE STUFF HERE.
 
-
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -28,6 +27,7 @@
 #include "ESPStringTemplate.h"
 #include "ESPFlash.h"
 #include "ESPFlashCounter.h"
+#include "ESPFlashString.h"
 
 
 #define DEFAULT_SSID                  "ESPCaptiveImagePortal"
@@ -58,8 +58,9 @@ static const char _PAGEFOOTER[]         PROGMEM = "</body></html>";
 
 void handleCaptiveImagePortal(AsyncWebServerRequest *request);
 void handleUploadPage(AsyncWebServerRequest *request);
-
-void updateSSIDString(const String& content);
+void handleDelete(AsyncWebServerRequest *request);
+void handleFileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final);
+void handleSsidEdit(AsyncWebServerRequest *request);
 
 /* Create DNS server instance to enable captive portal. */
 DNSServer dnsServer;
@@ -68,9 +69,9 @@ AsyncWebServer server(80);
 /*ESPFlash instance used for uploading files. */
 ESPFlash<uint8_t> fileUploadFlash;
 /*ESPFlash instance used for storing ssid. */
-ESPFlash<char> ssidFlash(SSID_FILEPATH);
+ESPFlashString ssid(SSID_FILEPATH, DEFAULT_SSID);
 /*ESPFlash instance used for counting connections. */
-ESPFlash<uint32_t> connectionCounterFlash(CONNECTION_COUNTER_FILEPATH);
+ESPFlashCounter connectionCounter(CONNECTION_COUNTER_FILEPATH);
 /*Buffer for webpage */
 char buffer[3000];
 
@@ -96,18 +97,11 @@ void setup()
       imagesDirectory.fileName().c_str(),
       "no-cache");
   }
-
-  if(!SPIFFS.exists(SSID_FILEPATH))
-  {
-    ssidFlash.appendElements(DEFAULT_SSID, strlen(DEFAULT_SSID));
-  } 
   
   /* Configure access point with static IP address */
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, netMsk);
-  char ssid[ssidFlash.length()];
-  ssidFlash.getFrontElements(ssid, ssidFlash.length());
-  WiFi.softAP(ssid);
+  WiFi.softAP(ssid.get());
 
   /* Start DNS server for captive portal. Route all requests to the ESP IP address. */
   dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
@@ -144,9 +138,8 @@ void loop()
     else
     {
       digitalWrite(LED_BUILTIN, false);
-      uint32_t counter = connectionCounterFlash.get();
-      connectionCounterFlash.set(++counter);
-      Serial.printf("Incrementing connection counter: %d\n", counter);
+      connectionCounter.increment();
+      Serial.printf("Incrementing connection counter: %d\n", connectionCounter.get());
     }
 
     previousNumberOfStations = numberOfStations;
@@ -196,7 +189,7 @@ void handleUploadPage(AsyncWebServerRequest *request)
   pageTemplate.add_P(_PAGEHEADER);
   pageTemplate.add_P(_TITLE, "%TITLE%", "Super Secret Page");
   pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Visit Count");
-  pageTemplate.add(String(connectionCounterFlash.get()).c_str());
+  pageTemplate.add(String(connectionCounter.get()).c_str());
   pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Delete Image");
 
   imagesDirectory.rewind();
@@ -263,11 +256,10 @@ void handleSsidEdit(AsyncWebServerRequest *request)
     return request->requestAuthentication();
   }
 
-  request->send(200, "text/html", "Changing SSID. You will be disconnected. Please reconnect.");
   AsyncWebParameter* p = request->getParam("SSID");
   if(p->value() != "")
   {
-    ssidFlash.setElements(p->value().c_str(), p->value().length());
+    ssid.set(p->value());
     WiFi.softAPdisconnect(true);
     WiFi.softAP(p->value());  
   }
