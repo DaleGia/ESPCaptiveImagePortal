@@ -26,6 +26,7 @@
 #include <DNSServer.h>
 #include "FS.h"
 #include "ESPStringTemplate.h"
+#include "ESPFlash.h"
 #include "ESPFlashCounter.h"
 
 
@@ -36,7 +37,7 @@
 #define CONNECTION_COUNTER_FILEPATH   "/connectionCounter"
 
 #define IMAGES_DIRECTORY              "/images"
-#define WEB_PAGE_FILEPATH             "/stringtemplate/webpage.html"
+#define WEB_PAGE_FILEPATH             "/webpage.html"
 
 /* Store different HTML elements in flash. Descriptions of the various
   tokens are included above each element that has tokens.*/
@@ -49,7 +50,7 @@ static const char _SUBTITLE[]           PROGMEM = "<hr><h2>%SUBTITLE%</h2><hr>";
 /* %HEIGHT% equals the height of the image on the webpage. */
 static const char _EMBEDIMAGE[]         PROGMEM = "<img src=\"%IMAGEURI%\" alt=\"%IMAGEURI%\" width=\"100%\">";
 static const char _DELETEIMAGE[]        PROGMEM = "<form action=\"/delete\"> <img src=\"%IMAGEURI%\" alt=\"%IMAGEURI%\" width=\"20%\"> <input type=\"submit\" value=\"delete\" name=\"%IMAGEURI%\"></form>";
-static const char _ADDIMAGE[]           PROGMEM = "<form action=\"/supersecretpage\" method=\"post\" enctype=\"multipart/form-data\">Image to Upload:<input type=\"file\" value=\"uploadFile\" name=\"uploadFile\" accept=\"image/png, image/gif, image/png, image/jpeg, image/jpg, image/apng, image/webp\"><input type=\"submit\" value=\"Upload Image\" name=\"submit\"></form>";
+static const char _ADDIMAGE[]           PROGMEM = "<form action=\"/supersecretpage\" method=\"post\" enctype=\"multipart/form-data\">Image to Upload:<input type=\"file\" value=\"uploadFile\" name=\"uploadFile\" accept=\"image/*\"><input type=\"submit\" value=\"Upload Image\" name=\"submit\"></form>";
 static const char _SSIDEDIT[]           PROGMEM = "<form action=\"/ssidedit\">New SSID (You will be disconnected from WiFi): <input type=\"text\" value=\"\" name=\"SSID\"><input type=\"submit\" name=\"submit\"></form>";
 static const char _FILEUPLOADMESSAGE[]  PROGMEM = "File upload complete. click <a href=\"/secretuploadpage\">here</a> to continue...";
 static const char _BREAK[]              PROGMEM = "<br>";
@@ -58,29 +59,32 @@ static const char _PAGEFOOTER[]         PROGMEM = "</body></html>";
 void handleCaptiveImagePortal(AsyncWebServerRequest *request);
 void handleUploadPage(AsyncWebServerRequest *request);
 
-String getSSIDString(void);
 void updateSSIDString(const String& content);
 
 /* Create DNS server instance to enable captive portal. */
 DNSServer dnsServer;
 /* Create webserver instance for serving the StringTemplate example. */
 AsyncWebServer server(80);
-/* Set up counter for number of connected devices */
-ESPFlashCounter wifiConnectionCounter(CONNECTION_COUNTER_FILEPATH);
+/*ESPFlash instance used for uploading files. */
+ESPFlash<uint8_t> fileUploadFlash;
+/*ESPFlash instance used for storing ssid. */
+ESPFlash<char> ssidFlash(SSID_FILEPATH);
+/*ESPFlash instance used for counting connections. */
+ESPFlash<uint32_t> connectionCounterFlash(CONNECTION_COUNTER_FILEPATH);
+/*Buffer for webpage */
+char buffer[3000];
+
 
 /* Soft AP network parameters */
 IPAddress apIP(192, 168, 4, 1);
 IPAddress netMsk(255, 255, 255, 0);
 Dir imagesDirectory;
 
-bool fileUploadInProgress = false;
-
 void setup()
 {
   Serial.begin(115200);
   SPIFFS.begin();
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, true);
   
   /* Open the SPIFFS root directory and serve each file with a uri of the filename */
   imagesDirectory = SPIFFS.openDir(IMAGES_DIRECTORY);
@@ -89,18 +93,21 @@ void setup()
     server.serveStatic(
       imagesDirectory.fileName().c_str(),
       SPIFFS,
-      imagesDirectory.fileName().c_str());
+      imagesDirectory.fileName().c_str(),
+      "no-cache");
   }
 
   if(!SPIFFS.exists(SSID_FILEPATH))
   {
-    updateSSIDString(DEFAULT_SSID);
+    ssidFlash.appendElements(DEFAULT_SSID, strlen(DEFAULT_SSID));
   } 
   
   /* Configure access point with static IP address */
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, netMsk);
-  WiFi.softAP(getSSIDString().c_str());
+  char ssid[ssidFlash.length()];
+  ssidFlash.getFrontElements(ssid, ssidFlash.length());
+  WiFi.softAP(ssid);
 
   /* Start DNS server for captive portal. Route all requests to the ESP IP address. */
   dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
@@ -115,6 +122,8 @@ void setup()
   /* Define the handler for when the server receives a GET request for the root uri. */
   server.onNotFound(handleCaptiveImagePortal);
 
+  /* Set the LED low (it is inverted) */
+  digitalWrite(LED_BUILTIN, true);
   /* Begin the web server */
   server.begin();
 }
@@ -135,7 +144,9 @@ void loop()
     else
     {
       digitalWrite(LED_BUILTIN, false);
-      wifiConnectionCounter.increment();
+      uint32_t counter = connectionCounterFlash.get();
+      connectionCounterFlash.set(++counter);
+      Serial.printf("Incrementing connection counter: %d\n", counter);
     }
 
     previousNumberOfStations = numberOfStations;
@@ -147,7 +158,7 @@ void loop()
 void handleCaptiveImagePortal(AsyncWebServerRequest *request)
 {  
   String filename;
-  ESPStringTemplate pageTemplate(WEB_PAGE_FILEPATH);
+  ESPStringTemplate pageTemplate(buffer, sizeof(buffer));
   /* This handler is supposed to get the next file in the SPIFFS root directory and
     server it as an embedded image on a HTML page. It does that by getting the filename
     from the next file in the rootDirectory Dir instance, and setting it as the IMAGEURI
@@ -171,41 +182,39 @@ void handleCaptiveImagePortal(AsyncWebServerRequest *request)
     pageTemplate.add_P(PSTR("<h1>NO IMAGES UPLOADED!!!</h1>"));
   }
   pageTemplate.add_P(_PAGEFOOTER);
-  request->send(SPIFFS, pageTemplate.getFileName(), "text/html");
+  request->send(200, "text/html", buffer);
 }
 
 void handleUploadPage(AsyncWebServerRequest *request)
 {
-  Serial.println("handleUploadPage");
   if(!request->authenticate(HTTP_USER_AUTH, HTTP_PASS_AUTH))
   {
     return request->requestAuthentication();
   }
   String filename;
-  ESPStringTemplate pageTemplate(WEB_PAGE_FILEPATH);
+  ESPStringTemplate pageTemplate(buffer, sizeof(buffer));
   pageTemplate.add_P(_PAGEHEADER);
   pageTemplate.add_P(_TITLE, "%TITLE%", "Super Secret Page");
   pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Visit Count");
-  pageTemplate.add(String(wifiConnectionCounter.get()).c_str());
-  pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Delete Files");
+  pageTemplate.add(String(connectionCounterFlash.get()).c_str());
+  pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Delete Image");
 
   imagesDirectory.rewind();
   while (imagesDirectory.next())
   {
     pageTemplate.add_P(_DELETEIMAGE, "%IMAGEURI%", imagesDirectory.fileName().c_str());
   }
-
-  pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Add File");
+  pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Add Image");
   pageTemplate.add_P(_ADDIMAGE);
   pageTemplate.add_P(_SUBTITLE, "%SUBTITLE%", "Change SSID");
   pageTemplate.add_P(_SSIDEDIT);
   pageTemplate.add_P(_PAGEFOOTER);
-  request->send(SPIFFS, pageTemplate.getFileName(), "text/html");
+
+  request->send(200, "text/html", buffer);
 }
 
 void handleDelete(AsyncWebServerRequest *request)
 {
-  Serial.println("handleDelete");
   if(!request->authenticate(HTTP_USER_AUTH, HTTP_PASS_AUTH))
   {
     return request->requestAuthentication();
@@ -223,8 +232,6 @@ void handleDelete(AsyncWebServerRequest *request)
 
 void handleFileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final)
 {
-  static String rootFileName;
-  static File uploadfile;
 
   if (!index)
   {
@@ -232,34 +239,25 @@ void handleFileUpload(AsyncWebServerRequest *request, const String& filename, si
     {
       return request->requestAuthentication();
     }
-    String spiffsFilename;
-    spiffsFilename = filename; 
-    if(spiffsFilename.length() > 20)
-    {
-      int index = spiffsFilename.indexOf('.');
-      String fileformat = spiffsFilename.substring(index);
-      spiffsFilename.remove(17);
-      spiffsFilename += fileformat;
-    }
-    rootFileName = "/images/" + spiffsFilename;
-    uploadfile = SPIFFS.open(rootFileName.c_str(), "w");
+    String rootFileName;
+    rootFileName = "/images/" + filename;
+    fileUploadFlash.setFileName(rootFileName.c_str());
   }
 
-  uploadfile.write(data, len);
+  fileUploadFlash.appendElements(data, len);
   
   if (final)
   {
-    uploadfile.close();
     server.serveStatic(
-      rootFileName.c_str(),
+      fileUploadFlash.getFileName(),
       SPIFFS,
-      rootFileName.c_str());
+      fileUploadFlash.getFileName(),
+      "no-cache");
   }
 }
 
 void handleSsidEdit(AsyncWebServerRequest *request)
 {
-  Serial.println("handleSsidEdit");
   if(!request->authenticate(HTTP_USER_AUTH, HTTP_PASS_AUTH))
   {
     return request->requestAuthentication();
@@ -269,32 +267,12 @@ void handleSsidEdit(AsyncWebServerRequest *request)
   AsyncWebParameter* p = request->getParam("SSID");
   if(p->value() != "")
   {
-    updateSSIDString(p->value());
+    ssidFlash.setElements(p->value().c_str(), p->value().length());
     WiFi.softAPdisconnect(true);
-    WiFi.softAP(p->value().c_str());  
+    WiFi.softAP(p->value());  
   }
   else
   {
     request->redirect("/supersecretpage");
   }
-}
-
-String getSSIDString(void)
-{
-  String ssid_string;
-  File ssid = SPIFFS.open(SSID_FILEPATH, "r");
-  while(ssid.available())
-  {
-    ssid_string += (char)ssid.read();
-  }
-  ssid.close();
-
-  return ssid_string;
-}
-
-void updateSSIDString(const String& content)
-{
-  File ssid = SPIFFS.open(SSID_FILEPATH, "w");
-  ssid.print(content);      
-  ssid.close();  
 }
