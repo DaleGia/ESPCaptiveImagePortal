@@ -3,7 +3,6 @@
 
   Copyright (c) 2020 Dale Giancono. All rights reserved..
   This file is a an application for a captive image portal with upload page.
-  WRITE MORE STUFF HERE.
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,15 +18,15 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-#include "ESP8266WiFi.h"
-#include "ESPAsyncTCP.h"
+#include <ESP8266WiFi.h>
+#include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
-#include "FS.h"
-#include "ESPStringTemplate.h"
-#include "ESPFlash.h"
-#include "ESPFlashCounter.h"
-#include "ESPFlashString.h"
+#include <FS.h>
+#include <ESPStringTemplate.h>
+#include <ESPFlash.h>
+#include <ESPFlashCounter.h>
+#include <ESPFlashString.h>
 
 
 #define DEFAULT_SSID                  "ESPCaptiveImagePortal"
@@ -83,7 +82,6 @@ Dir imagesDirectory;
 
 void setup()
 {
-  Serial.begin(115200);
   SPIFFS.begin();
   pinMode(LED_BUILTIN, OUTPUT);
   
@@ -139,7 +137,6 @@ void loop()
     {
       digitalWrite(LED_BUILTIN, false);
       connectionCounter.increment();
-      Serial.printf("Incrementing connection counter: %d\n", connectionCounter.get());
     }
 
     previousNumberOfStations = numberOfStations;
